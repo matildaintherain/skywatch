@@ -115,6 +115,13 @@ header{padding:.7rem 1rem 0;display:flex;align-items:center;justify-content:spac
 .fc-sub{font-size:.62rem;color:var(--muted);margin-top:1px}
 .fc-dist{font-family:var(--mono);font-size:.75rem;color:var(--accent);font-weight:700;flex-shrink:0}
 
+#filter-bar{padding:.4rem 1rem 0;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.filter-toggle{display:flex;align-items:center;gap:5px;cursor:pointer;flex-shrink:0}
+.filter-toggle input{accent-color:var(--accent);cursor:pointer}
+.filter-lbl{font-family:var(--mono);font-size:.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+.filter-speed{display:flex;align-items:center;gap:6px;flex:1}
+.filter-speed input{flex:1;accent-color:var(--accent);cursor:pointer}
+.filter-speed-val{font-family:var(--mono);font-size:.65rem;color:var(--accent);min-width:36px;text-align:right}
 #bottom-bar{padding:.35rem 1rem .45rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-top:1px solid var(--border);margin-top:.35rem}
 #last-updated{font-family:var(--mono);font-size:.58rem;color:var(--muted)}
 #toggle-list-btn{font-family:var(--mono);font-size:.6rem;color:var(--accent);background:none;border:1px solid var(--border2);border-radius:6px;padding:3px 9px;cursor:pointer}
@@ -154,6 +161,17 @@ header{padding:.7rem 1rem 0;display:flex;align-items:center;justify-content:spac
   <span class="radius-val" id="radius-val">100 km</span>
 </div>
 
+<div id="filter-bar">
+  <label class="filter-toggle">
+    <input type="checkbox" id="airborne-only" onchange="applyFilters()" checked>
+    <span class="filter-lbl">✈ Airborne only</span>
+  </label>
+  <div class="filter-speed">
+    <span class="filter-lbl">Min speed</span>
+    <input type="range" id="speed-filter" min="0" max="500" step="10" value="0" oninput="onSpeedFilter(this.value)">
+    <span class="filter-speed-val" id="speed-val">All</span>
+  </div>
+</div>
 <div id="pin-banner">📌 Tap anywhere on the map to set your location</div>
 <div id="notif-banner">
   <span>🔔 Enable background notifications?</span>
@@ -162,6 +180,9 @@ header{padding:.7rem 1rem 0;display:flex;align-items:center;justify-content:spac
 
 <div id="map-wrap">
   <div id="map"></div>
+  <div id="map-badge" style="position:absolute;top:8px;right:8px;z-index:800;background:rgba(9,12,18,.85);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:4px 9px;font-family:var(--mono);font-size:.65rem;color:var(--accent);pointer-events:none;display:none">
+    <span id="map-badge-count">0</span> aircraft
+  </div>
   <div id="alt-legend">
     <div class="legend-bar"></div>
     <div class="legend-labels"><span>0ft</span><span>20k</span><span>40k+</span></div>
@@ -397,31 +418,117 @@ const APIS=[
   p=>`https://api.adsb.lol/v2/lat/${p[0]}/lon/${p[1]}/dist/${p[2]}`,
   p=>`https://opendata.adsb.fi/api/v2/lat/${p[0]}/lon/${p[1]}/dist/${p[2]}`,
 ];
-const routeCache={};
+const routeCache={};       // hex → {fromIATA,toIATA,fromCity,toCity} | null
+const routeFetchTime={};   // hex → timestamp of last fetch attempt (for retry)
+const ROUTE_RETRY_MS = 3*60*1000; // retry failed lookups after 3 minutes
+
+// Top 150 airports: ICAO → {iata, city}
+const AIRPORTS={
+  VOBL:{iata:'BLR',city:'Bengaluru'},VABB:{iata:'BOM',city:'Mumbai'},
+  VIDP:{iata:'DEL',city:'Delhi'},VOMM:{iata:'MAA',city:'Chennai'},
+  VECC:{iata:'CCU',city:'Kolkata'},VOHY:{iata:'HYD',city:'Hyderabad'},
+  VOCX:{iata:'COK',city:'Kochi'},VAAH:{iata:'AMD',city:'Ahmedabad'},
+  VOGO:{iata:'GOI',city:'Goa'},VIAG:{iata:'AGR',city:'Agra'},
+  VOPB:{iata:'IXZ',city:'Port Blair'},VEJH:{iata:'JSA',city:'Jaisalmer'},
+  OMDB:{iata:'DXB',city:'Dubai'},OMAA:{iata:'AUH',city:'Abu Dhabi'},
+  OTHH:{iata:'DOH',city:'Doha'},OERK:{iata:'RUH',city:'Riyadh'},
+  OEJN:{iata:'JED',city:'Jeddah'},OOMS:{iata:'MCT',city:'Muscat'},
+  EGLL:{iata:'LHR',city:'London'},EGKK:{iata:'LGW',city:'London Gatwick'},
+  LFPG:{iata:'CDG',city:'Paris'},EDDF:{iata:'FRA',city:'Frankfurt'},
+  EHAM:{iata:'AMS',city:'Amsterdam'},LEMD:{iata:'MAD',city:'Madrid'},
+  LIRF:{iata:'FCO',city:'Rome'},LSZH:{iata:'ZUR',city:'Zurich'},
+  LOWW:{iata:'VIE',city:'Vienna'},UUEE:{iata:'SVO',city:'Moscow'},
+  LTBA:{iata:'IST',city:'Istanbul'},LTFM:{iata:'IST',city:'Istanbul'},
+  WSSS:{iata:'SIN',city:'Singapore'},VTBS:{iata:'BKK',city:'Bangkok'},
+  WMKK:{iata:'KUL',city:'Kuala Lumpur'},VHHH:{iata:'HKG',city:'Hong Kong'},
+  ZGGG:{iata:'CAN',city:'Guangzhou'},ZBAA:{iata:'PEK',city:'Beijing'},
+  ZSPD:{iata:'PVG',city:'Shanghai'},RJAA:{iata:'NRT',city:'Tokyo'},
+  RJTT:{iata:'HND',city:'Tokyo Haneda'},RKSI:{iata:'ICN',city:'Seoul'},
+  YSSY:{iata:'SYD',city:'Sydney'},YMML:{iata:'MEL',city:'Melbourne'},
+  KATL:{iata:'ATL',city:'Atlanta'},KLAX:{iata:'LAX',city:'Los Angeles'},
+  KJFK:{iata:'JFK',city:'New York'},KORD:{iata:'ORD',city:'Chicago'},
+  KDFW:{iata:'DFW',city:'Dallas'},KSFO:{iata:'SFO',city:'San Francisco'},
+  KIAH:{iata:'IAH',city:'Houston'},KBOS:{iata:'BOS',city:'Boston'},
+  CYYZ:{iata:'YYZ',city:'Toronto'},CYVR:{iata:'YVR',city:'Vancouver'},
+  SBGR:{iata:'GRU',city:'São Paulo'},SAEZ:{iata:'EZE',city:'Buenos Aires'},
+  FAOR:{iata:'JNB',city:'Johannesburg'},HECA:{iata:'CAI',city:'Cairo'},
+  HAAB:{iata:'ADD',city:'Addis Ababa'},DNMM:{iata:'LOS',city:'Lagos'},
+  VNSB:{iata:'KTM',city:'Kathmandu'},OPKC:{iata:'KHI',city:'Karachi'},
+  OPLR:{iata:'LHE',city:'Lahore'},VLVT:{iata:'VTE',city:'Vientiane'},
+  RPLL:{iata:'MNL',city:'Manila'},WIII:{iata:'CGK',city:'Jakarta'},
+};
+
+function icaoToCity(icao){
+  if(!icao||icao==='—') return null;
+  const a=AIRPORTS[icao.toUpperCase()];
+  return a?{iata:a.iata,city:a.city}:{iata:icao,city:icao};
+}
 
 async function fetchRoute(hex,callsign){
-  if(routeCache[hex]!==undefined) return routeCache[hex];
-  routeCache[hex]=null; // mark as fetching
+  // Return cached result unless it was a failure older than ROUTE_RETRY_MS
+  if(routeCache[hex]!==undefined){
+    if(routeCache[hex]!==null) return routeCache[hex]; // valid cached result
+    if(Date.now()-( routeFetchTime[hex]||0) < ROUTE_RETRY_MS) return null; // too soon to retry
+  }
+  routeCache[hex]=null;
+  routeFetchTime[hex]=Date.now();
   const cs=(callsign||'').trim();
   if(!cs) return null;
-  for(const base of[
-    `https://api.airplanes.live/v2/callsign/${cs}`,
-    `https://api.adsb.lol/v2/callsign/${cs}`
-  ]){
-    try{
-      const res=await fetch(base);
-      if(!res.ok) continue;
+
+  // Try 1: OpenSky route DB — most reliable free source, no auth needed
+  try{
+    const res=await fetch(`https://opensky-network.org/api/routes?callsign=${cs}`);
+    if(res.ok){
+      const data=await res.json();
+      if(data&&data.route&&data.route.length>=2){
+        const fromInfo=icaoToCity(data.route[0]);
+        const toInfo=icaoToCity(data.route[data.route.length-1]);
+        if(fromInfo&&toInfo){
+          const r={fromIATA:fromInfo.iata,toIATA:toInfo.iata,fromCity:fromInfo.city,toCity:toInfo.city};
+          routeCache[hex]=r; return r;
+        }
+      }
+    }
+  }catch(e){}
+
+  // Try 2: airplanes.live callsign — check all plausible field name variants
+  try{
+    const res=await fetch(`https://api.airplanes.live/v2/callsign/${cs}`);
+    if(res.ok){
       const data=await res.json();
       const ac=(data.ac||[])[0];
-      if(ac&&ac.dep_icao){
-        const r={
-          fromIATA:ac.dep_iata||ac.dep_icao||'—',toIATA:ac.arr_iata||ac.arr_icao||'—',
-          fromCity:ac.dep_city||ac.dep_icao||'—',toCity:ac.arr_city||ac.arr_icao||'—'
-        };
-        routeCache[hex]=r; return r;
+      if(ac){
+        const fromIcao=ac.dep_icao||ac.from_icao||ac.origin||ac.dep||'';
+        const toIcao=  ac.arr_icao||ac.to_icao  ||ac.dest  ||ac.arr||'';
+        if(fromIcao){
+          const fromInfo=icaoToCity(fromIcao)||{iata:fromIcao,city:fromIcao};
+          const toInfo=  icaoToCity(toIcao)  ||{iata:toIcao||'—',city:toIcao||'—'};
+          const r={fromIATA:fromInfo.iata,toIATA:toInfo.iata,fromCity:fromInfo.city,toCity:toInfo.city};
+          routeCache[hex]=r; return r;
+        }
       }
-    }catch(e){}
-  }
+    }
+  }catch(e){}
+
+  // Try 3: adsb.lol callsign
+  try{
+    const res=await fetch(`https://api.adsb.lol/v2/callsign/${cs}`);
+    if(res.ok){
+      const data=await res.json();
+      const ac=(data.ac||[])[0];
+      if(ac){
+        const fromIcao=ac.dep_icao||ac.from_icao||ac.origin||ac.dep||'';
+        const toIcao=  ac.arr_icao||ac.to_icao  ||ac.dest  ||ac.arr||'';
+        if(fromIcao){
+          const fromInfo=icaoToCity(fromIcao)||{iata:fromIcao,city:fromIcao};
+          const toInfo=  icaoToCity(toIcao)  ||{iata:toIcao||'—',city:toIcao||'—'};
+          const r={fromIATA:fromInfo.iata,toIATA:toInfo.iata,fromCity:fromInfo.city,toCity:toInfo.city};
+          routeCache[hex]=r; return r;
+        }
+      }
+    }
+  }catch(e){}
+
   return null;
 }
 
@@ -433,7 +540,7 @@ let seenIds=new Set(),seenToday=0;
 let refreshInterval=null,countdownInterval=null,secondsLeft=30;
 let isTracking=false,lastApi=0;
 let markers={},trails={},radiusCircle=null,myMarker=null;
-let listOpen=false,pinMode=false,gpsWatchId=null;
+let listOpen=false,pinMode=false,gpsWatchId=null,followHex=null;
 const posHistory={};
 const MAX_TRAIL=15;
 
@@ -630,6 +737,50 @@ function startCountdown(){
 }
 
 // ═══════════════════════════════════════════════
+// FILTERS + FOLLOW
+// ═══════════════════════════════════════════════
+let filterAirborne=true, filterMinSpeed=0;
+let lastNearby=[], lastNewOnes=[];
+
+function onSpeedFilter(val){
+  filterMinSpeed=parseInt(val);
+  const el=document.getElementById('speed-val');
+  el.textContent=val==='0'?'All':val+' kts';
+  applyFilters();
+}
+
+function applyFilters(){
+  filterAirborne=document.getElementById('airborne-only').checked;
+  if(lastNearby.length) renderFiltered(lastNearby, lastNewOnes);
+}
+
+function renderFiltered(nearby, newOnes){
+  let filtered=nearby;
+  if(filterAirborne) filtered=filtered.filter(({ac})=>!ac.on_ground);
+  if(filterMinSpeed>0) filtered=filtered.filter(({ac})=>(ac.gs||0)>=filterMinSpeed);
+  if(map) updateMap(filtered,newOnes);
+  renderList(filtered,newOnes);
+  const badge=document.getElementById('map-badge');
+  const countEl=document.getElementById('map-badge-count');
+  if(filtered.length>0){badge.style.display='block';countEl.textContent=filtered.length;}
+  else badge.style.display='none';
+  // Follow mode: keep map centred on followed aircraft
+  if(followHex&&markers[followHex]){
+    const followed=filtered.find(f=>f.ac.hex===followHex);
+    if(followed) map.panTo([followed.ac.lat,followed.ac.lon],{animate:true,duration:0.5});
+  }
+}
+
+function toggleFollow(hex){
+  followHex = followHex===hex ? null : hex;
+  // Visual feedback: highlight followed marker
+  Object.keys(markers).forEach(id=>{
+    const el=markers[id].getElement();
+    if(el) el.style.filter= id===followHex ? 'drop-shadow(0 0 8px #00e5c8) brightness(1.3)' : '';
+  });
+}
+
+// ═══════════════════════════════════════════════
 // FETCH
 // ═══════════════════════════════════════════════
 async function fetchFlights(){
@@ -686,19 +837,42 @@ function processFlights(aircraft){
 
   for(const{ac}of nearby){
     if(!posHistory[ac.hex]) posHistory[ac.hex]=[];
-    const h=posHistory[ac.hex],last=h[h.length-1];
-    if(!last||last.lat!==ac.lat||last.lon!==ac.lon){
-      h.push({lat:ac.lat,lon:ac.lon,alt:ac.alt_baro||0});
-      if(h.length>MAX_TRAIL) h.shift();
+    const h=posHistory[ac.hex];
+    // Merge API-provided trail (richest source) with our accumulated history
+    if(ac.trail&&ac.trail.length>0){
+      // ac.trail is [{lat,lon,alt,spd,hdg,ts},...] oldest first
+      // Replace posHistory with API trail so we always have the full track
+      const apiPts=ac.trail.map(p=>({lat:p.lat,lon:p.lon,alt:p.alt||0}));
+      // Append current position as the newest point
+      apiPts.push({lat:ac.lat,lon:ac.lon,alt:ac.alt_baro||0});
+      posHistory[ac.hex]=apiPts.slice(-MAX_TRAIL);
+    } else {
+      // No trail from API — accumulate manually across scans
+      const last=h[h.length-1];
+      if(!last||last.lat!==ac.lat||last.lon!==ac.lon){
+        h.push({lat:ac.lat,lon:ac.lon,alt:ac.alt_baro||0});
+        if(h.length>MAX_TRAIL) h.shift();
+      }
     }
   }
 
-  if(map) updateMap(nearby,newOnes);
-  renderList(nearby,newOnes);
+  lastNearby=nearby; lastNewOnes=newOnes;
+  renderFiltered(nearby,newOnes);
 
-  for(const{ac}of nearby){
-    if(ac.flight&&routeCache[ac.hex]===undefined){
-      fetchRoute(ac.hex,ac.flight).then(()=>renderList(nearby,newOnes));
+  // Fetch routes for all nearby flights (background, non-blocking)
+  for(const{ac,dist}of nearby){
+    const needsFetch = ac.flight && (
+      routeCache[ac.hex]===undefined ||
+      (routeCache[ac.hex]===null && Date.now()-(routeFetchTime[ac.hex]||0)>ROUTE_RETRY_MS)
+    );
+    if(needsFetch){
+      fetchRoute(ac.hex,ac.flight).then(route=>{
+        renderList(nearby,newOnes);
+        // Also refresh popup if it's open
+        if(route && markers[ac.hex]&&markers[ac.hex].isPopupOpen()){
+          markers[ac.hex].setPopupContent(buildPopup(ac,dist,route));
+        }
+      });
     }
   }
 
@@ -735,6 +909,17 @@ function updateMap(nearby,newOnes){
     } else {
       const m=L.marker([ac.lat,ac.lon],{icon,zIndexOffset:500}).addTo(map);
       m.bindPopup(()=>buildPopup(ac,dist,routeCache[id]),{maxWidth:320,minWidth:255});
+      m.on('popupopen',()=>{
+        // If route not yet fetched, fetch now and live-patch the open popup
+        if(ac.flight && (routeCache[id]===undefined||routeCache[id]===null)){
+          fetchRoute(id,ac.flight).then(route=>{
+            if(route && m.isPopupOpen()){
+              m.setPopupContent(buildPopup(ac,dist,route));
+            }
+          });
+        }
+      });
+      m.on('click',()=>toggleFollow(id));
       markers[id]=m;
     }
   }
