@@ -41,8 +41,6 @@ function startPolling() {
         const cs = (first.flight || first.hex || 'A flight').trim();
         self.registration.showNotification('✈ SkyWatch', {
           body: `${cs} just entered your ${config.radiusKm} km zone!`,
-          icon: '/skywatch/icon.png',
-          badge: '/skywatch/icon.png',
           tag: 'skywatch-flight',
           renotify: true,
           vibrate: [150, 80, 150],
@@ -57,5 +55,5 @@ function startPolling() {
 
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  e.waitUntil(clients.openWindow('/skywatch/'));
+  e.waitUntil(clients.openWindow(self.registration.scope));
 });

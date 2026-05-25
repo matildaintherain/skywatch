@@ -65,7 +65,7 @@ header{padding:.7rem 1rem 0;display:flex;align-items:center;justify-content:spac
 #notif-banner{margin:.4rem 1rem 0;background:rgba(0,229,200,.08);border:1px solid var(--accent);border-radius:8px;padding:.4rem .75rem;font-size:.72rem;color:var(--accent);font-family:var(--mono);display:none;text-align:center;flex-shrink:0;cursor:pointer}
 #notif-banner.show{display:flex;align-items:center;justify-content:space-between;gap:8px}
 
-#map-wrap{flex:1;position:relative;margin:.45rem 1rem 0;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);min-height:0}
+#map-wrap{flex:1;position:relative;margin:.45rem 1rem 0;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);min-height:0;min-height:200px}
 #map{width:100%;height:100%}
 
 #alt-legend{position:absolute;bottom:8px;left:8px;z-index:800;background:rgba(9,12,18,.82);border:1px solid var(--border2);border-radius:8px;padding:5px 8px;pointer-events:none}
@@ -178,7 +178,6 @@ header{padding:.7rem 1rem 0;display:flex;align-items:center;justify-content:spac
   <button id="toggle-list-btn" onclick="toggleList()">▲ Show list</button>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onload="initApp()"></script>
 <script>
 // ═══════════════════════════════════════════════
 // AIRLINE LIVERY DATABASE
@@ -443,6 +442,8 @@ const MAX_TRAIL=15;
 // ═══════════════════════════════════════════════
 let map;
 function initApp(){
+  // Wait for browser layout pass so #map has real pixel dimensions
+  requestAnimationFrame(function(){
   map=L.map('map',{zoomControl:true,attributionControl:true}).setView([20,78],5);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
     attribution:'© OpenStreetMap contributors',maxZoom:18
@@ -458,6 +459,11 @@ function initApp(){
   if('Notification' in window && Notification.permission==='default'){
     document.getElementById('notif-banner').classList.add('show');
   }
+
+  // Force size recalculation after render
+  setTimeout(()=>map.invalidateSize(),100);
+
+  }); // end requestAnimationFrame
 
   // Register service worker
   if('serviceWorker' in navigator){
@@ -494,13 +500,15 @@ async function requestNotifPermission(){
 // PIN + GPS
 // ═══════════════════════════════════════════════
 function togglePinMode(){
+  if(!map) return;
   pinMode=!pinMode;
   document.getElementById('pin-btn').classList.toggle('on',pinMode);
   document.getElementById('pin-banner').classList.toggle('show',pinMode);
-  if(map) map.getContainer().style.cursor=pinMode?'crosshair':'';
+  map.getContainer().style.cursor=pinMode?'crosshair':'';
 }
 
 function setCenter(lat,lon,label){
+  if(!map) return;
   myLat=lat;myLon=lon;
   document.getElementById('search-input').value=label||(lat.toFixed(4)+'°, '+lon.toFixed(4)+'°');
   const myIcon=L.divIcon({
@@ -734,6 +742,7 @@ function updateMap(nearby,newOnes){
     if(!seen.has(id)){
       map.removeLayer(markers[id]);delete markers[id];
       if(trails[id]){trails[id].forEach(l=>map.removeLayer(l));delete trails[id];}
+      delete posHistory[id];
     }
   }
 }
@@ -831,5 +840,6 @@ function renderList(nearby,newOnes){
   }
 }
 </script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onload="initApp()"></script>
 </body>
 </html>
